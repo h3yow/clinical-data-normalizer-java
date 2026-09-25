@@ -37,3 +37,6 @@ build/
 
 ### Mac OS ###
 .DS_Store
+# local run artifacts
+app-run.log
+app-run.pid
