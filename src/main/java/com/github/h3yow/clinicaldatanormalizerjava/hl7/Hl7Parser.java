@@ -69,17 +69,25 @@ public class Hl7Parser {
             // 没有 MSH 就无法读取 MSH-18；结构问题稍后在帧校验中报出。
             return StandardCharsets.US_ASCII;
         }
-        if (mshLine.length() < 8 || mshLine.charAt(3) != '|') {
-            // 至少要能拿到 MSH|enc
+        if (mshLine.length() < 8) {
+            // 至少要能拿到 MSH + 字段分隔符 + 编码字符
             return StandardCharsets.US_ASCII;
         }
+        // MSH-1 即字段分隔符本身（标准允许非 '|'，此处按实际字符切分）
         char fieldSep = mshLine.charAt(3);
         String[] fields = mshLine.split(Pattern.quote(String.valueOf(fieldSep)), -1);
-        // MSH 特殊编号：fields[0]=MSH, [1]=编码字符, MSH-18 -> fields[18]
-        if (fields.length <= 18 || fields[18].isBlank()) {
+        // MSH 字段编号：fields[0]="MSH"，fields[1]=MSH-2（编码字符），fields[n-1]=MSH-n，
+        // 因此 MSH-18（字符集）位于 fields[17]
+        if (fields.length <= 17 || fields[17].isBlank()) {
             return StandardCharsets.US_ASCII;
         }
-        String name = fields[18].split("\\^", 2)[0].trim();
+        // MSH-18 可重复（如 "ASCII~8859/1"），以第一重复的第一组件为准；
+        // 重复/组件分隔符取自 MSH-2 声明
+        String encChars = fields[1];
+        char repSep = encChars.length() >= 2 ? encChars.charAt(1) : '~';
+        char compSep = encChars.isEmpty() ? '^' : encChars.charAt(0);
+        String firstRepetition = fields[17].split(Pattern.quote(String.valueOf(repSep)), 2)[0];
+        String name = firstRepetition.split(Pattern.quote(String.valueOf(compSep)), 2)[0].trim();
         Charset cs = CHARSET_BY_HL7_NAME.get(name.toUpperCase());
         if (cs == null) {
             throw new Hl7ParseException(ParseErrorReason.UNSUPPORTED_CHARSET, "不支持的 MSH-18 字符集: " + name);

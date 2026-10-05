@@ -1,6 +1,7 @@
 package com.github.h3yow.clinicaldatanormalizerjava.web;
 
 import com.github.h3yow.clinicaldatanormalizerjava.auth.AuthorizationException;
+import com.github.h3yow.clinicaldatanormalizerjava.export.VersionNotFoundException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -20,6 +21,16 @@ public class ApiExceptionHandler {
                 "status", "REJECTED",
                 "errorStage", "AUTHORIZE",
                 "errorReason", e.getReason().name(),
+                "errorMessage", e.getMessage() == null ? "" : e.getMessage()
+        ));
+    }
+
+    @ExceptionHandler(VersionNotFoundException.class)
+    public ResponseEntity<Map<String, Object>> handleVersionNotFound(VersionNotFoundException e) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of(
+                "status", "REJECTED",
+                "errorStage", "EXPORT",
+                "errorReason", e.getReason(),
                 "errorMessage", e.getMessage() == null ? "" : e.getMessage()
         ));
     }

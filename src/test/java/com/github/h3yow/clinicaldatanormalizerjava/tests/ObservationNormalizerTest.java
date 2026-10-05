@@ -29,7 +29,7 @@ class ObservationNormalizerTest {
             new ObservationNormalizer(new CodeCatalog(), new UnitCatalog());
 
     private String base(String obx) {
-        return "MSH|^~\\&|HIS_A|FAC||FAC|20260920100000+0800||ORU^R01|MSG-N1|P|2.5.1|||||||UTF-8\r"
+        return "MSH|^~\\&|HIS_A|FAC||FAC|20260920100000+0800||ORU^R01|MSG-N1|P|2.5.1||||||UTF-8\r"
                 + "PID|||P-0001||Doe^John\rOBR|1||B-1|8867-4|||20260920100000+0800\r" + obx + "\r";
     }
 

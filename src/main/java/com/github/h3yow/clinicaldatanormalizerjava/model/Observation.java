@@ -15,7 +15,8 @@ import java.time.Instant;
  * @param sourceSystem      来源系统（MSH-3.1）
  * @param messageControlId  来源消息控制号（MSH-10），用于追溯
  * @param observationId     来源消息内观测序号（OBX 段序号），用于追溯
- * @param fingerprint       内容指纹：对"患者+指标+生效时间+值+单位"做确定性哈希，
+ * @param kind              语义类别：最终结果 / 更正 / 撤回（来自 OBX-11）
+ * @param fingerprint       内容指纹：对"患者+指标+生效时间+类别+值+单位"做确定性哈希，
  *                          同内容重放得到相同指纹，实现幂等去重
  */
 public record Observation(
@@ -29,6 +30,7 @@ public record Observation(
         String sourceSystem,
         String messageControlId,
         int observationId,
+        ObservationKind kind,
         String fingerprint
 ) {
     /** 冲突裁决键：同一患者、同一指标、同一观测时刻。 */

@@ -85,7 +85,7 @@ class Hl7ParserTest {
     @Test
     void parsesHexEscapeUnderUtf8() {
         // \X2C\ = ','
-        String text = "MSH|^~\\&|HIS_A|||FAC|20260920100000+0800||ORU^R01|MSG-X|P|2.5.1|||||||UTF-8\r"
+        String text = "MSH|^~\\&|HIS_A|||FAC|20260920100000+0800||ORU^R01|MSG-X|P|2.5.1||||||UTF-8\r"
                 + "PID|||P-1||Smith^John\\X2c\\Jr\rOBR|1||B|8867-4\rOBX|1|NM|8867-4||70|bpm||||F\r";
         Hl7Message msg = parser.parseBatch(text.getBytes(StandardCharsets.UTF_8)).get(0);
         assertEquals("John,Jr", msg.segment("PID").get(5, 0, 1));
@@ -104,8 +104,31 @@ class Hl7ParserTest {
     }
 
     @Test
+    void acceptsMultibyteContentWhenCharsetDeclaredAtMsh18() {
+        // MSH-18=UTF-8（标准字段位置 fields[17]），负载含 UTF-8 多字节字符：
+        // 合法声明不得被误判为 MALFORMED_TEXT_ENCODING
+        byte[] payload = ("MSH|^~\\&|HIS_A|||FAC|20260920100000+0800||ORU^R01|MSG-C|P|2.5.1||||||UTF-8\r"
+                + "PID|||P-1||Müller\rOBR|1||B|8867-4\rOBX|1|NM|8867-4||70|bpm||||F\r")
+                .getBytes(StandardCharsets.UTF_8);
+        Hl7Message msg = parser.parseBatch(payload).get(0);
+        assertEquals("Müller", msg.segment("PID").get(5, 0, 0));
+        log.info("[字符集校准] MSH-18=UTF-8 合法声明 + 多字节姓名 -> 正常解析 —— 判定: 按标准字段位置读取 MSH-18");
+    }
+
+    @Test
+    void usesFirstRepetitionOfMsh18() {
+        // MSH-18 可重复：取第一重复（UTF-8~ASCII 以 UTF-8 解码）
+        byte[] payload = ("MSH|^~\\&|HIS_A|||FAC|20260920100000+0800||ORU^R01|MSG-R|P|2.5.1||||||UTF-8~ASCII\r"
+                + "PID|||P-1||Müller\rOBR|1||B|8867-4\rOBX|1|NM|8867-4||70|bpm||||F\r")
+                .getBytes(StandardCharsets.UTF_8);
+        Hl7Message msg = parser.parseBatch(payload).get(0);
+        assertEquals("Müller", msg.segment("PID").get(5, 0, 0));
+        log.info("[字符集校准] MSH-18=UTF-8~ASCII 取第一重复 -> 正常解析 —— 判定: 重复字段按标准取第一值");
+    }
+
+    @Test
     void rejectsUnsupportedCharset() {
-        byte[] payload = ("MSH|^~\\&|HIS_A|||FAC|20260920100000+0800||ORU^R01|MSG-U|P|2.5.1|||||||EDFIC\r"
+        byte[] payload = ("MSH|^~\\&|HIS_A|||FAC|20260920100000+0800||ORU^R01|MSG-U|P|2.5.1||||||EDFIC\r"
                 + "PID|||P-1\rOBR|1||B|8867-4\rOBX|1|NM|8867-4||70|bpm||||F\r")
                 .getBytes(StandardCharsets.US_ASCII);
         Hl7ParseException ex = assertThrows(Hl7ParseException.class, () -> parser.parseBatch(payload));

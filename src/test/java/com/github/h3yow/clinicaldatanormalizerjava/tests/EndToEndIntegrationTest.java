@@ -75,4 +75,47 @@ class EndToEndIntegrationTest {
         assertTrue(body.contains("UNEXPECTED_FRAME_START"));
         log.info("[HTTP 畸形消息] {}", body);
     }
+
+    @Test
+    void historicalVersionExportOverHttp() throws Exception {
+        // v1：心率 72；v2：更正为 90（患者 P-0001 在 grant-all-demo 范围内）
+        String v1 = oru("MSG-E2E-H1", "HIS_A", "P-0001", "72", "bpm", "20260920100000+0800");
+        String v2 = "MSH|^~\\&|HIS_A|FAC||FAC|20260920100000+0800||ORU^R01|MSG-E2E-H2|P|2.5.1\r"
+                + "PID|||P-0001\rOBR|1||B-1|8867-4\r"
+                + "OBX|1|NM|8867-4^^LN||90|bpm|||||C|||20260920100000+0800\r";
+        mvc.perform(post("/api/hl7/ingest").contentType(MediaType.TEXT_PLAIN).content(v1))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/hl7/ingest").contentType(MediaType.TEXT_PLAIN).content(v2))
+                .andExpect(status().isOk());
+
+        // 历史版本导出：v1 仍是 72，不受后续更正影响
+        mvc.perform(get("/api/export")
+                        .param("grantId", "grant-all-demo")
+                        .param("patientId", "P-0001")
+                        .param("categories", "vital_signs")
+                        .param("version", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.dataVersion").value(1))
+                .andExpect(jsonPath("$.observations[0].value").value(72.0));
+        log.info("[HTTP 历史导出] version=1 -> 200，值=72（更正前快照）");
+
+        // 版本清单
+        mvc.perform(get("/api/export/versions")
+                        .param("grantId", "grant-all-demo")
+                        .param("patientId", "P-0001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].changes[0].changeType").value("ADDED"))
+                .andExpect(jsonPath("$[1].changes[0].changeType").value("CORRECTED"));
+        log.info("[HTTP 版本清单] /api/export/versions -> v1=ADDED, v2=CORRECTED");
+
+        // 不存在的版本：404 + VERSION_NOT_FOUND（与 403 授权拒绝可区分）
+        mvc.perform(get("/api/export")
+                        .param("grantId", "grant-all-demo")
+                        .param("patientId", "P-0001")
+                        .param("categories", "vital_signs")
+                        .param("version", "99"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorReason").value("VERSION_NOT_FOUND"));
+        log.info("[HTTP 版本拒绝] version=99 -> 404 VERSION_NOT_FOUND");
+    }
 }
