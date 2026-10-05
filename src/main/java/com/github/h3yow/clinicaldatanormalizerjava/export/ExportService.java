@@ -1,9 +1,9 @@
 package com.github.h3yow.clinicaldatanormalizerjava.export;
 
-import com.github.h3yow.clinicaldatanormalizerjava.auth.AuthorizationGrant;
 import com.github.h3yow.clinicaldatanormalizerjava.auth.AuthorizationService;
 import com.github.h3yow.clinicaldatanormalizerjava.ingest.IngestionService;
 import com.github.h3yow.clinicaldatanormalizerjava.ingest.PatientRecord;
+import com.github.h3yow.clinicaldatanormalizerjava.ingest.VersionSnapshot;
 import com.github.h3yow.clinicaldatanormalizerjava.model.Observation;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -34,6 +34,10 @@ import java.util.Set;
  *
  * <p>可复现性：数据版本（患者纵向合并版本号）与授权范围（大类清单）相同时，
  * 观测集合、伪名、摘要 digest 完全一致。digest 为对规范化排序后内容的 SHA-256。
+ *
+ * <p>导出口径：只导出患者<strong>当前有效观测集合</strong>（被更正掉、被撤回、
+ * 被冲突裁决掉的值不出现）。支持按历史版本追溯导出（{@link #exportVersion}），
+ * 历史版本取自固化快照，与当前导出走同一套授权校验与去标识化边界。
  */
 @Service
 public class ExportService {
@@ -53,7 +57,7 @@ public class ExportService {
 
     public ExportBundle export(String grantId, String patientId, Set<String> categories) {
         Set<String> requested = categories == null ? Set.of() : new LinkedHashSet<>(categories);
-        AuthorizationGrant grant = authorizationService.validate(grantId, patientId, requested, Instant.now());
+        authorizationService.validate(grantId, patientId, requested, Instant.now());
 
         PatientRecord record = ingestionService.getPatient(patientId);
         if (record == null) {
@@ -61,21 +65,93 @@ public class ExportService {
             return buildBundle(pseudonym(patientId), 0, requested, List.of());
         }
 
-        List<DeidentifiedObservation> rows = deidentify(patientId, requested);
+        List<DeidentifiedObservation> rows = deidentifyRows(record.effectiveObservations(), requested);
         return buildBundle(pseudonym(patientId), record.version(), requested, rows);
     }
 
     /**
+     * 按历史版本追溯导出（审计复盘）。
+     *
+     * <p>与当前版本导出走完全相同的授权校验与去标识化边界；数据取自该版本
+     * 固化的不可变快照，之后投递再多新数据也不影响结果。同一患者、同一版本、
+     * 同一授权范围下任意次导出的观测集合与 digest 完全一致（可复现）。
+     *
+     * @param versionRaw 版本号（正整数）；非法格式与不存在版本分别抛出
+     *                   {@link ExportErrorReason#INVALID_VERSION} 与
+     *                   {@link ExportErrorReason#VERSION_NOT_FOUND}，可区分
+     */
+    public ExportBundle exportVersion(String grantId, String patientId, Set<String> categories,
+                                      String versionRaw) {
+        Set<String> requested = categories == null ? Set.of() : new LinkedHashSet<>(categories);
+        authorizationService.validate(grantId, patientId, requested, Instant.now());
+
+        long version = parseVersion(versionRaw);
+        PatientRecord record = ingestionService.getPatient(patientId);
+        VersionSnapshot snapshot = record == null ? null : record.versionSnapshot(version);
+        if (snapshot == null) {
+            // 版本不存在（含超出当前范围、或属于其他患者的版本号）：可区分拒绝，不泄露存在性
+            throw new ExportException(ExportErrorReason.VERSION_NOT_FOUND,
+                    "患者不存在版本 " + version + "（当前共 "
+                            + (record == null ? 0 : record.version()) + " 个版本）");
+        }
+        List<Observation> effective = snapshot.effectiveFingerprints().stream()
+                .map(record::observation)
+                .filter(java.util.Objects::nonNull)
+                .toList();
+        List<DeidentifiedObservation> rows = deidentifyRows(effective, requested);
+        return buildBundle(pseudonym(patientId), snapshot.version(), requested, rows);
+    }
+
+    /**
+     * 版本历史查询：版本号、变化时间、相对上一版的变化清单。
+     * 走同一套授权校验；视图不含患者标识、来源系统、消息控制号。
+     */
+    public List<VersionView> listVersions(String grantId, String patientId) {
+        authorizationService.validate(grantId, patientId, Set.of(), Instant.now());
+        PatientRecord record = ingestionService.getPatient(patientId);
+        if (record == null) {
+            return List.of();
+        }
+        return record.versions().stream()
+                .map(v -> new VersionView(v.version(), v.changedAt(), v.changes()))
+                .toList();
+    }
+
+    private long parseVersion(String versionRaw) {
+        if (versionRaw == null || versionRaw.isBlank()) {
+            throw new ExportException(ExportErrorReason.INVALID_VERSION, "版本号缺失");
+        }
+        final long version;
+        try {
+            version = Long.parseLong(versionRaw.trim());
+        } catch (NumberFormatException e) {
+            throw new ExportException(ExportErrorReason.INVALID_VERSION,
+                    "版本号必须为正整数: " + versionRaw);
+        }
+        if (version < 1) {
+            throw new ExportException(ExportErrorReason.INVALID_VERSION,
+                    "版本号必须为正整数: " + versionRaw);
+        }
+        return version;
+    }
+
+    /**
      * 不做授权校验的去标识化（仅限服务内部/测试直接使用；REST 路径必须走 export）。
+     * 导出的是患者当前有效观测集合：被更正掉、被撤回、被冲突裁决掉的值不在其中。
      */
     public List<DeidentifiedObservation> deidentify(String patientId, Set<String> categories) {
         PatientRecord record = ingestionService.getPatient(patientId);
         if (record == null) {
             return List.of();
         }
+        return deidentifyRows(record.effectiveObservations(), categories);
+    }
+
+    private List<DeidentifiedObservation> deidentifyRows(List<Observation> observations,
+                                                         Set<String> categories) {
         Set<String> allowed = categories == null ? Set.of() : categories;
         List<DeidentifiedObservation> rows = new ArrayList<>();
-        for (Observation obs : record.observations()) {
+        for (Observation obs : observations) {
             if (!allowed.contains(obs.category())) {
                 continue;
             }

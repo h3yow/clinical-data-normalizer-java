@@ -4,6 +4,7 @@ import com.github.h3yow.clinicaldatanormalizerjava.hl7.Hl7Message;
 import com.github.h3yow.clinicaldatanormalizerjava.hl7.Hl7Message.Field;
 import com.github.h3yow.clinicaldatanormalizerjava.hl7.Hl7Message.Segment;
 import com.github.h3yow.clinicaldatanormalizerjava.model.Observation;
+import com.github.h3yow.clinicaldatanormalizerjava.model.ObservationKind;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
@@ -23,7 +24,7 @@ import java.util.List;
  * <ul>
  *   <li>仅接受 MSH-9 = ORU^R01；MSH-10、MSH-3、MSH-7 必填且合法。</li>
  *   <li>必须存在 PID（PID-3 非空）、OBR、至少一个 OBX。</li>
- *   <li>OBX-2 必须为 NM；OBX-11 仅接受 F（Final）/C（Corrected）。</li>
+ *   <li>OBX-2 必须为 NM（撤回事件除外）；OBX-11 接受 F（Final）/C（Corrected）/D（Delete）。</li>
  *   <li>OBX-3 必须命中编码目录；OBX-6 必须命中单位目录并换算到规范单位。</li>
  *   <li>OBX-5 的每个重复各自产生一条观测；空值、NaN/Infinity、越界数值拒绝。</li>
  *   <li>生效时间取 OBX-14，缺省回退 OBR-7，再回退 MSH-7；精度至少到分钟。</li>
@@ -97,16 +98,27 @@ public class ObservationNormalizer {
             Segment obx = obxSegments.get(idx);
             int observationId = parseObservationId(obx, idx + 1);
 
-            String valueType = obx.get(2);
-            if (valueType == null || !"NM".equals(valueType.trim())) {
-                throw new NormalizationException(NormalizationErrorReason.UNSUPPORTED_OBSERVATION_VALUE_TYPE,
-                        "OBX-2 仅接受 NM，实际: " + valueType + "（OBX#" + observationId + "）");
+            // 先判定 OBX-11 结果状态：F=普通新增，C=更正，D=撤回。
+            // 撤回（D）不携带观测值，OBX-2/OBX-5/OBX-6 的数值校验对其不适用。
+            String status = obx.get(11);
+            ObservationKind kind;
+            if (status != null && "F".equals(status.trim())) {
+                kind = ObservationKind.FINAL;
+            } else if (status != null && "C".equals(status.trim())) {
+                kind = ObservationKind.CORRECTION;
+            } else if (status != null && "D".equals(status.trim())) {
+                kind = ObservationKind.WITHDRAWAL;
+            } else {
+                throw new NormalizationException(NormalizationErrorReason.INVALID_OBSERVATION_STATUS,
+                        "OBX-11 仅接受 F/C/D，实际: " + status + "（OBX#" + observationId + "）");
             }
 
-            String status = obx.get(11);
-            if (status == null || (!"F".equals(status.trim()) && !"C".equals(status.trim()))) {
-                throw new NormalizationException(NormalizationErrorReason.INVALID_OBSERVATION_STATUS,
-                        "OBX-11 仅接受 F/C，实际: " + status + "（OBX#" + observationId + "）");
+            if (kind != ObservationKind.WITHDRAWAL) {
+                String valueType = obx.get(2);
+                if (valueType == null || !"NM".equals(valueType.trim())) {
+                    throw new NormalizationException(NormalizationErrorReason.UNSUPPORTED_OBSERVATION_VALUE_TYPE,
+                            "OBX-2 仅接受 NM，实际: " + valueType + "（OBX#" + observationId + "）");
+                }
             }
 
             String sourceCode = obx.get(3, 0, 0);
@@ -123,6 +135,29 @@ public class ObservationNormalizer {
                 throw new NormalizationException(NormalizationErrorReason.UNKNOWN_OBSERVATION_CODE,
                         "未收录的观测代码: " + codeSystem + ":" + sourceCode
                                 + "（来源 " + sourceSystem + "，OBX#" + observationId + "）");
+            }
+
+            Instant effectiveTime;
+            String obx14 = obx.get(14);
+            if (!isBlank(obx14)) {
+                effectiveTime = parseDtm(obx14, NormalizationErrorReason.INVALID_DATETIME);
+            } else if (obrTime != null) {
+                effectiveTime = obrTime;
+            } else {
+                effectiveTime = messageTime;
+            }
+
+            if (kind == ObservationKind.WITHDRAWAL) {
+                // 撤回事件：以患者+指标+时刻定位目标，不携带数值；
+                // 指纹使用固定的"无值"形式（NaN/空单位），与任何真实观测都不会冲突。
+                String fingerprint = fingerprint(patientId, metric.code(), effectiveTime,
+                        Double.NaN, "");
+                observations.add(new Observation(
+                        patientId, metric.category(), metric.code(), metric.displayName(),
+                        Double.NaN, "", effectiveTime,
+                        sourceSystem.trim(), controlId.trim(), observationId,
+                        fingerprint, ObservationKind.WITHDRAWAL));
+                continue;
             }
 
             Field valueField = obx.field(5);
@@ -155,16 +190,6 @@ public class ObservationNormalizer {
                         "无法识别的单位: '" + sourceUnit + "'（指标 " + metric.code() + "）");
             }
 
-            Instant effectiveTime;
-            String obx14 = obx.get(14);
-            if (!isBlank(obx14)) {
-                effectiveTime = parseDtm(obx14, NormalizationErrorReason.INVALID_DATETIME);
-            } else if (obrTime != null) {
-                effectiveTime = obrTime;
-            } else {
-                effectiveTime = messageTime;
-            }
-
             for (int rep = 0; rep < valueField.repetitions().size(); rep++) {
                 String rawValue = valueField.repetitions().get(rep).components().get(0).subcomponents().get(0);
                 if (isBlank(rawValue)) {
@@ -190,7 +215,8 @@ public class ObservationNormalizer {
                         sourceSystem.trim(),
                         controlId.trim(),
                         observationId,
-                        fingerprint));
+                        fingerprint,
+                        kind));
             }
         }
         return observations;

@@ -84,12 +84,45 @@ class Hl7ParserTest {
 
     @Test
     void parsesHexEscapeUnderUtf8() {
-        // \X2C\ = ','
-        String text = "MSH|^~\\&|HIS_A|||FAC|20260920100000+0800||ORU^R01|MSG-X|P|2.5.1|||||||UTF-8\r"
+        // \X2C\ = ','；MSH-18 按标准写在第 18 号字段位置（split 下标 17）
+        String text = "MSH|^~\\&|HIS_A|||FAC|20260920100000+0800||ORU^R01|MSG-X|P|2.5.1||||||UTF-8\r"
                 + "PID|||P-1||Smith^John\\X2c\\Jr\rOBR|1||B|8867-4\rOBX|1|NM|8867-4||70|bpm||||F\r";
         Hl7Message msg = parser.parseBatch(text.getBytes(StandardCharsets.UTF_8)).get(0);
         assertEquals("John,Jr", msg.segment("PID").get(5, 0, 1));
         log.info("[十六进制转义] \\X2c\\ -> ',' —— 判定: 按 UTF-8 解码十六进制转义正确");
+    }
+
+    @Test
+    void honorsStandardMsh18CharsetDeclaration() {
+        // 按 HL7 标准在 MSH-18 声明 UTF-8，消息体含非 ASCII 字节：不得误拒
+        String text = "MSH|^~\\&|HIS_A|||FAC|20260920100000+0800||ORU^R01|MSG-C1|P|2.5.1||||||UTF-8\r"
+                + "PID|||P-1||Müller\rOBR|1||B|8867-4\rOBX|1|NM|8867-4||70|bpm||||F\r";
+        Hl7Message msg = parser.parseBatch(text.getBytes(StandardCharsets.UTF_8)).get(0);
+        assertEquals("Müller", msg.segment("PID").get(5));
+        log.info("[字符集校准] MSH-18=UTF-8（标准位置）+ 非 ASCII 内容 -> 正常解析 —— 判定: 合法声明不被误拒");
+    }
+
+    @Test
+    void honorsLatin1DeclarationWithHighBytes() {
+        // MSH-18=8859/1（HL7 标准字符集名），负载按 ISO-8859-1 编码
+        String text = "MSH|^~\\&|HIS_A|||FAC|20260920100000+0800||ORU^R01|MSG-C2|P|2.5.1||||||8859/1\r"
+                + "PID|||P-1||Müller\rOBR|1||B|8867-4\rOBX|1|NM|8867-4||70|bpm||||F\r";
+        Hl7Message msg = parser.parseBatch(text.getBytes(StandardCharsets.ISO_8859_1)).get(0);
+        assertEquals("Müller", msg.segment("PID").get(5));
+        log.info("[字符集校准] MSH-18=8859/1 + Latin-1 字节 -> 正常解析 —— 判定: 标准字符集名被正确识别");
+    }
+
+    @Test
+    void charsetDeclaredAtWrongFieldPositionIsNotHonored() {
+        // 声明写在 MSH-19（非标准位置）不得被当作 MSH-18 采信：
+        // 缺省仍按 US-ASCII 严格解码，高位字节必须拒绝（严格行为不放宽）
+        String text = "MSH|^~\\&|HIS_A|||FAC|20260920100000+0800||ORU^R01|MSG-C3|P|2.5.1|||||||UTF-8\r"
+                + "PID|||P-1||Müller\rOBR|1||B|8867-4\rOBX|1|NM|8867-4||70|bpm||||F\r";
+        byte[] payload = text.getBytes(StandardCharsets.UTF_8);
+        Hl7ParseException ex = assertThrows(Hl7ParseException.class, () -> parser.parseBatch(payload));
+        assertEquals(ParseErrorReason.MALFORMED_TEXT_ENCODING, ex.getReason());
+        log.info("[字符集校准] 声明写在 MSH-19 不予采信，缺省 US-ASCII 严格解码 -> {} —— 判定: 只认标准字段语义",
+                ex.getReason());
     }
 
     @Test
@@ -105,7 +138,8 @@ class Hl7ParserTest {
 
     @Test
     void rejectsUnsupportedCharset() {
-        byte[] payload = ("MSH|^~\\&|HIS_A|||FAC|20260920100000+0800||ORU^R01|MSG-U|P|2.5.1|||||||EDFIC\r"
+        // 未登记的字符集名写在标准 MSH-18 位置：仍以 UNSUPPORTED_CHARSET 拒绝
+        byte[] payload = ("MSH|^~\\&|HIS_A|||FAC|20260920100000+0800||ORU^R01|MSG-U|P|2.5.1||||||EDFIC\r"
                 + "PID|||P-1\rOBR|1||B|8867-4\rOBX|1|NM|8867-4||70|bpm||||F\r")
                 .getBytes(StandardCharsets.US_ASCII);
         Hl7ParseException ex = assertThrows(Hl7ParseException.class, () -> parser.parseBatch(payload));

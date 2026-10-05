@@ -41,7 +41,7 @@ public enum NormalizationErrorReason {
     UNKNOWN_UNIT,
     /** 同一 OBX 的各重复之间单位不一致 */
     INCONSISTENT_UNIT_ACROSS_REPETITIONS,
-    /** OBX-11 观测结果状态缺失或不是 F/C（仅接受 Final/Corrected） */
+    /** OBX-11 观测结果状态缺失或不是 F/C/D（Final/Corrected/Delete） */
     INVALID_OBSERVATION_STATUS,
     /** OBX-14/OBR-7/MSH-7 时间格式非法（须为 HL7 DTM） */
     INVALID_DATETIME,

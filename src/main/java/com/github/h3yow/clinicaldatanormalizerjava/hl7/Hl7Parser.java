@@ -75,11 +75,13 @@ public class Hl7Parser {
         }
         char fieldSep = mshLine.charAt(3);
         String[] fields = mshLine.split(Pattern.quote(String.valueOf(fieldSep)), -1);
-        // MSH 特殊编号：fields[0]=MSH, [1]=编码字符, MSH-18 -> fields[18]
-        if (fields.length <= 18 || fields[18].isBlank()) {
+        // MSH 特殊编号：fields[0]="MSH"，fields[1]=MSH-2 编码字符，fields[n-1]=MSH-n，
+        // 因此 MSH-18（字符集声明）在 fields[17]；fields[18] 是 MSH-19，不得混用。
+        if (fields.length <= 17 || fields[17].isBlank()) {
             return StandardCharsets.US_ASCII;
         }
-        String name = fields[18].split("\\^", 2)[0].trim();
+        // MSH-18 可重复（主字符集在第一重复），组件形式取第一组件
+        String name = fields[17].split("~", 2)[0].split("\\^", 2)[0].trim();
         Charset cs = CHARSET_BY_HL7_NAME.get(name.toUpperCase());
         if (cs == null) {
             throw new Hl7ParseException(ParseErrorReason.UNSUPPORTED_CHARSET, "不支持的 MSH-18 字符集: " + name);

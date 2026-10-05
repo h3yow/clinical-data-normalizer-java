@@ -3,6 +3,7 @@ package com.github.h3yow.clinicaldatanormalizerjava.tests;
 import com.github.h3yow.clinicaldatanormalizerjava.hl7.Hl7Message;
 import com.github.h3yow.clinicaldatanormalizerjava.hl7.Hl7Parser;
 import com.github.h3yow.clinicaldatanormalizerjava.model.Observation;
+import com.github.h3yow.clinicaldatanormalizerjava.model.ObservationKind;
 import com.github.h3yow.clinicaldatanormalizerjava.normalize.CodeCatalog;
 import com.github.h3yow.clinicaldatanormalizerjava.normalize.NormalizationErrorReason;
 import com.github.h3yow.clinicaldatanormalizerjava.normalize.NormalizationException;
@@ -134,8 +135,27 @@ class ObservationNormalizerTest {
     }
 
     @Test
-    void fallsBackEffectiveTimeToObrThenMsh() {
-        String noObx14 = "MSH|^~\\&|HIS_A|||FAC|20260918090000+0000||ORU^R01|MSG-FT|P|2.5.1\r"
+    void mapsObx11StatusToEventKind() {
+        // F -> 普通新增
+        Observation f = norm(base("OBX|1|NM|8867-4||72|bpm|||||F|||20260920100000+0800")).get(0);
+        assertEquals(ObservationKind.FINAL, f.kind());
+
+        // C -> 更正事件，携带更正后的数值
+        Observation c = norm(base("OBX|1|NM|8867-4||75|bpm|||||C|||20260920100000+0800")).get(0);
+        assertEquals(ObservationKind.CORRECTION, c.kind());
+        assertEquals(75.0, c.value(), 1e-9);
+
+        // D -> 撤回事件：不携带数值，OBX-2/OBX-5/OBX-6 可缺省，仅以患者+指标+时刻定位目标
+        Observation d = norm(base("OBX|1||8867-4||||||||D|||20260920100000+0800")).get(0);
+        assertEquals(ObservationKind.WITHDRAWAL, d.kind());
+        assertEquals("8867-4", d.code());
+        assertEquals("2026-09-20T02:00:00Z", d.effectiveTime().toString());
+        log.info("[状态映射] OBX-11 F->{} C->{} D->{} —— 判定: 更正/撤回按标准结果状态归一，撤回不要求数值字段",
+                f.kind(), c.kind(), d.kind());
+    }
+
+    @Test
+    void fallsBackEffectiveTimeToObrThenMsh() {        String noObx14 = "MSH|^~\\&|HIS_A|||FAC|20260918090000+0000||ORU^R01|MSG-FT|P|2.5.1\r"
                 + "PID|||P-2\rOBR|1||B|8867-4|||20260919103000+0000\rOBX|1|NM|8867-4||70|bpm|||||F\r";
         Observation o = norm(noObx14).get(0);
         assertEquals("2026-09-19T10:30:00Z", o.effectiveTime().toString(), "OBX-14 缺省回退 OBR-7");

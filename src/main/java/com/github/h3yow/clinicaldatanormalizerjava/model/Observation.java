@@ -17,6 +17,7 @@ import java.time.Instant;
  * @param observationId     来源消息内观测序号（OBX 段序号），用于追溯
  * @param fingerprint       内容指纹：对"患者+指标+生效时间+值+单位"做确定性哈希，
  *                          同内容重放得到相同指纹，实现幂等去重
+ * @param kind              事件类别（普通新增/更正/撤回，取自 OBX-11）
  */
 public record Observation(
         String patientId,
@@ -29,7 +30,8 @@ public record Observation(
         String sourceSystem,
         String messageControlId,
         int observationId,
-        String fingerprint
+        String fingerprint,
+        ObservationKind kind
 ) {
     /** 冲突裁决键：同一患者、同一指标、同一观测时刻。 */
     public String slotKey() {
